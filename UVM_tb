@@ -1,0 +1,393 @@
+`timescale 1ns/1ps
+
+// ============================================================
+// AXI4-Lite Slave Verification Testbench
+// Scoreboard + Functional Coverage + 3 Test Sequences
+// Fully compatible with Vivado XSim (no UVM required)
+// ============================================================
+
+module tb_axi_lite;
+
+  // -------------------------------------------------------
+  // Clock & Reset
+  // -------------------------------------------------------
+  reg clk;
+  reg rst;
+
+  initial clk = 0;
+  always #5 clk = ~clk;  // 100 MHz
+
+  // -------------------------------------------------------
+  // DUT Signals
+  // -------------------------------------------------------
+  reg         awvalid;
+  reg  [31:0] awaddr;
+  wire        awready;
+
+  reg         wvalid;
+  reg  [31:0] wdata;
+  reg  [3:0]  wstrb;
+  wire        wready;
+
+  wire        bvalid;
+  wire [1:0]  bresp;
+  reg         bready;
+
+  reg         arvalid;
+  reg  [31:0] araddr;
+  wire        arready;
+
+  wire        rvalid;
+  wire [31:0] rdata;
+  wire [1:0]  rresp;
+  reg         rready;
+
+  // -------------------------------------------------------
+  // DUT Instantiation
+  // -------------------------------------------------------
+  axi_lite_slave #(
+    .DATA_WIDTH(32),
+    .ADDR_WIDTH(32),
+    .NUM_REGS  (4)
+  ) dut (
+    .clk    (clk),
+    .rst    (rst),
+    .awvalid(awvalid), .awaddr(awaddr), .awready(awready),
+    .wvalid (wvalid),  .wdata (wdata),  .wstrb  (wstrb),  .wready(wready),
+    .bvalid (bvalid),  .bresp (bresp),  .bready (bready),
+    .arvalid(arvalid), .araddr(araddr), .arready(arready),
+    .rvalid (rvalid),  .rdata (rdata),  .rresp  (rresp),  .rready(rready)
+  );
+
+  // -------------------------------------------------------
+  // Reference Model
+  // -------------------------------------------------------
+  reg [31:0] ref_model [0:3];
+  integer    pass_count;
+  integer    fail_count;
+
+  // -------------------------------------------------------
+  // Functional Coverage Flags
+  // -------------------------------------------------------
+  reg cov_wstrb_byte0, cov_wstrb_byte1, cov_wstrb_byte2, cov_wstrb_byte3;
+  reg cov_wstrb_lower, cov_wstrb_upper, cov_wstrb_full;
+  reg cov_wr_reg0, cov_wr_reg1, cov_wr_reg2, cov_wr_reg3;
+  reg cov_rd_reg0, cov_rd_reg1, cov_rd_reg2, cov_rd_reg3;
+
+  // -------------------------------------------------------
+  // AXI Write Task
+  // -------------------------------------------------------
+  task axi_write;
+    input [31:0] addr;
+    input [31:0] data;
+    input [3:0]  strb;
+    integer idx;
+    integer timeout;
+    begin
+      idx = addr[3:2];
+
+      // AW channel - assert and wait for awready
+      @(posedge clk); #1;
+      awvalid = 1; awaddr = addr;
+      timeout = 0;
+      @(posedge clk);
+      while (!awready && timeout < 100) begin
+        timeout = timeout + 1;
+        @(posedge clk);
+      end
+      #1; awvalid = 0;
+
+      // W channel - assert and wait for wready
+      wvalid = 1; wdata = data; wstrb = strb;
+      timeout = 0;
+      @(posedge clk);
+      while (!wready && timeout < 100) begin
+        timeout = timeout + 1;
+        @(posedge clk);
+      end
+      #1; wvalid = 0;
+
+      // B channel - wait for bvalid then accept
+      bready = 1;
+      timeout = 0;
+      @(posedge clk);
+      while (!bvalid && timeout < 100) begin
+        timeout = timeout + 1;
+        @(posedge clk);
+      end
+      @(posedge clk); #1;
+      bready = 0;
+
+      // Update reference model with WSTRB masking
+      if (strb[0]) ref_model[idx][7:0]   = data[7:0];
+      if (strb[1]) ref_model[idx][15:8]  = data[15:8];
+      if (strb[2]) ref_model[idx][23:16] = data[23:16];
+      if (strb[3]) ref_model[idx][31:24] = data[31:24];
+
+      // Coverage tracking - WSTRB
+      if (strb == 4'b0001) cov_wstrb_byte0 = 1;
+      if (strb == 4'b0010) cov_wstrb_byte1 = 1;
+      if (strb == 4'b0100) cov_wstrb_byte2 = 1;
+      if (strb == 4'b1000) cov_wstrb_byte3 = 1;
+      if (strb == 4'b0011) cov_wstrb_lower = 1;
+      if (strb == 4'b1100) cov_wstrb_upper = 1;
+      if (strb == 4'b1111) cov_wstrb_full  = 1;
+
+      // Coverage tracking - register index
+      if (idx == 0) cov_wr_reg0 = 1;
+      if (idx == 1) cov_wr_reg1 = 1;
+      if (idx == 2) cov_wr_reg2 = 1;
+      if (idx == 3) cov_wr_reg3 = 1;
+
+      $display("[WRITE] t=%0t  ADDR=0x%08h  DATA=0x%08h  STRB=0b%04b  BRESP=%02b",
+               $time, addr, data, strb, bresp);
+    end
+  endtask
+
+  // -------------------------------------------------------
+  // AXI Read Task (with scoreboard check)
+  // -------------------------------------------------------
+  task axi_read;
+    input  [31:0] addr;
+    reg    [31:0] got;
+    integer idx;
+    integer timeout;
+    begin
+      idx = addr[3:2];
+
+      // AR channel
+      @(posedge clk); #1;
+      arvalid = 1; araddr = addr;
+      timeout = 0;
+      @(posedge clk);
+      while (!arready && timeout < 100) begin
+        timeout = timeout + 1;
+        @(posedge clk);
+      end
+      #1; arvalid = 0;
+
+      // R channel - wait for rvalid
+      rready = 1;
+      timeout = 0;
+      @(posedge clk);
+      while (!rvalid && timeout < 100) begin
+        timeout = timeout + 1;
+        @(posedge clk);
+      end
+      got = rdata;
+      @(posedge clk); #1;
+      rready = 0;
+
+      // Coverage
+      if (idx == 0) cov_rd_reg0 = 1;
+      if (idx == 1) cov_rd_reg1 = 1;
+      if (idx == 2) cov_rd_reg2 = 1;
+      if (idx == 3) cov_rd_reg3 = 1;
+
+      // Scoreboard
+      if (got === ref_model[idx]) begin
+        $display("[READ ] t=%0t  ADDR=0x%08h  GOT=0x%08h  EXP=0x%08h  --> PASS",
+                 $time, addr, got, ref_model[idx]);
+        pass_count = pass_count + 1;
+      end else begin
+        $display("[READ ] t=%0t  ADDR=0x%08h  GOT=0x%08h  EXP=0x%08h  --> *** FAIL ***",
+                 $time, addr, got, ref_model[idx]);
+        fail_count = fail_count + 1;
+      end
+    end
+  endtask
+
+  // -------------------------------------------------------
+  // Coverage Report Task
+  // -------------------------------------------------------
+  task print_coverage;
+    integer hits;
+    begin
+      hits = cov_wstrb_byte0 + cov_wstrb_byte1 + cov_wstrb_byte2 + cov_wstrb_byte3
+           + cov_wstrb_lower + cov_wstrb_upper  + cov_wstrb_full
+           + cov_wr_reg0 + cov_wr_reg1 + cov_wr_reg2 + cov_wr_reg3
+           + cov_rd_reg0 + cov_rd_reg1 + cov_rd_reg2 + cov_rd_reg3;
+
+      $display("");
+      $display("==================================================");
+      $display("  FUNCTIONAL COVERAGE REPORT");
+      $display("==================================================");
+      $display("  WSTRB Patterns:");
+      $display("    Byte0 only  (0001): %s", cov_wstrb_byte0 ? "HIT" : "MISS");
+      $display("    Byte1 only  (0010): %s", cov_wstrb_byte1 ? "HIT" : "MISS");
+      $display("    Byte2 only  (0100): %s", cov_wstrb_byte2 ? "HIT" : "MISS");
+      $display("    Byte3 only  (1000): %s", cov_wstrb_byte3 ? "HIT" : "MISS");
+      $display("    Lower half  (0011): %s", cov_wstrb_lower ? "HIT" : "MISS");
+      $display("    Upper half  (1100): %s", cov_wstrb_upper ? "HIT" : "MISS");
+      $display("    Full word   (1111): %s", cov_wstrb_full  ? "HIT" : "MISS");
+      $display("  Write Coverage per Register:");
+      $display("    reg[0] 0x00: %s", cov_wr_reg0 ? "HIT" : "MISS");
+      $display("    reg[1] 0x04: %s", cov_wr_reg1 ? "HIT" : "MISS");
+      $display("    reg[2] 0x08: %s", cov_wr_reg2 ? "HIT" : "MISS");
+      $display("    reg[3] 0x0C: %s", cov_wr_reg3 ? "HIT" : "MISS");
+      $display("  Read Coverage per Register:");
+      $display("    reg[0] 0x00: %s", cov_rd_reg0 ? "HIT" : "MISS");
+      $display("    reg[1] 0x04: %s", cov_rd_reg1 ? "HIT" : "MISS");
+      $display("    reg[2] 0x08: %s", cov_rd_reg2 ? "HIT" : "MISS");
+      $display("    reg[3] 0x0C: %s", cov_rd_reg3 ? "HIT" : "MISS");
+      $display("--------------------------------------------------");
+      $display("  Coverage: %0d / 15 bins hit  (%0d%%)", hits, (hits * 100) / 15);
+      $display("==================================================");
+    end
+  endtask
+
+  // -------------------------------------------------------
+  // MAIN TEST
+  // -------------------------------------------------------
+  integer seed;
+  integer i;
+  reg [31:0] rnd_data;
+  reg [3:0]  rnd_strb;
+  reg [1:0]  rnd_idx;
+  reg [31:0] addr_table [0:3];
+
+  initial begin
+    // Init signals
+    awvalid = 0; wvalid = 0; bready = 0;
+    arvalid = 0; rready = 0;
+    awaddr  = 0; wdata  = 0; wstrb  = 0; araddr = 0;
+
+    // Init coverage flags
+    cov_wstrb_byte0 = 0; cov_wstrb_byte1 = 0;
+    cov_wstrb_byte2 = 0; cov_wstrb_byte3 = 0;
+    cov_wstrb_lower = 0; cov_wstrb_upper = 0;
+    cov_wstrb_full  = 0;
+    cov_wr_reg0 = 0; cov_wr_reg1 = 0;
+    cov_wr_reg2 = 0; cov_wr_reg3 = 0;
+    cov_rd_reg0 = 0; cov_rd_reg1 = 0;
+    cov_rd_reg2 = 0; cov_rd_reg3 = 0;
+
+    pass_count = 0; fail_count = 0;
+
+    ref_model[0] = 0; ref_model[1] = 0;
+    ref_model[2] = 0; ref_model[3] = 0;
+
+    addr_table[0] = 32'h00;
+    addr_table[1] = 32'h04;
+    addr_table[2] = 32'h08;
+    addr_table[3] = 32'h0C;
+
+    // Reset
+    rst = 1;
+    repeat(5) @(posedge clk);
+    rst = 0;
+    repeat(2) @(posedge clk);
+
+    // ==================================================
+    // TEST 1: Full Word Write then Read (WSTRB = 0xF)
+    // ==================================================
+    $display("");
+    $display("==================================================");
+    $display("  TEST 1: Full Word Write-Read All Registers");
+    $display("==================================================");
+    axi_write(32'h00, 32'hDEADBEEF, 4'hF);
+    axi_write(32'h04, 32'hCAFEBABE, 4'hF);
+    axi_write(32'h08, 32'hA5A5A5A5, 4'hF);
+    axi_write(32'h0C, 32'h12345678, 4'hF);
+    axi_read(32'h00);
+    axi_read(32'h04);
+    axi_read(32'h08);
+    axi_read(32'h0C);
+
+    repeat(3) @(posedge clk);
+
+    // ==================================================
+    // TEST 2: Partial Byte-Lane Writes (WSTRB masking)
+    // ==================================================
+    $display("");
+    $display("==================================================");
+    $display("  TEST 2: Partial Byte-Lane Writes (WSTRB)");
+    $display("==================================================");
+
+    axi_write(32'h00, 32'hFFFFFFFF, 4'hF);
+    axi_write(32'h00, 32'h00000042, 4'b0001);  // only byte 0
+    axi_read(32'h00);  // expect 0xFFFFFF42
+
+    axi_write(32'h00, 32'hFFFFFFFF, 4'hF);
+    axi_write(32'h00, 32'h00005500, 4'b0010);  // only byte 1
+    axi_read(32'h00);  // expect 0xFFFF55FF
+
+    axi_write(32'h00, 32'hFFFFFFFF, 4'hF);
+    axi_write(32'h00, 32'h0000ABCD, 4'b0011);  // lower half
+    axi_read(32'h00);  // expect 0xFFFFABCD
+
+    axi_write(32'h00, 32'hFFFFFFFF, 4'hF);
+    axi_write(32'h00, 32'hBEEF0000, 4'b1100);  // upper half
+    axi_read(32'h00);  // expect 0xBEEFFFFF
+
+    axi_write(32'h04, 32'h00000000, 4'hF);
+    axi_write(32'h04, 32'hAABBCCDD, 4'b0100);  // only byte 2
+    axi_read(32'h04);  // expect 0x00CC0000
+
+    axi_write(32'h04, 32'h00000000, 4'hF);
+    axi_write(32'h04, 32'hAABBCCDD, 4'b1000);  // only byte 3
+    axi_read(32'h04);  // expect 0xAA000000
+
+    repeat(3) @(posedge clk);
+
+    // ==================================================
+    // TEST 3: Pseudo-Random Transactions
+    // ==================================================
+    $display("");
+    $display("==================================================");
+    $display("  TEST 3: Pseudo-Random Transactions (20 writes)");
+    $display("==================================================");
+
+    // Pre-load known values
+    axi_write(32'h00, 32'hA0B0C0D0, 4'hF);
+    axi_write(32'h04, 32'h11223344, 4'hF);
+    axi_write(32'h08, 32'hDEADC0DE, 4'hF);
+    axi_write(32'h0C, 32'h55AA55AA, 4'hF);
+
+    seed = 42;
+    for (i = 0; i < 20; i = i + 1) begin
+      rnd_data = $random(seed);
+      rnd_strb = ($random % 15) + 1;   // 1..15, never 0
+      rnd_idx  = $random % 4;
+      seed     = seed + 7;
+      axi_write(addr_table[rnd_idx], rnd_data, rnd_strb);
+    end
+
+    $display("");
+    $display("  -- Read-back verification after random writes --");
+    axi_read(32'h00);
+    axi_read(32'h04);
+    axi_read(32'h08);
+    axi_read(32'h0C);
+
+    repeat(3) @(posedge clk);
+
+    // ==================================================
+    // RESULTS
+    // ==================================================
+    print_coverage();
+    $display("");
+    $display("==================================================");
+    $display("  SCOREBOARD SUMMARY");
+    $display("  PASSED: %0d", pass_count);
+    $display("  FAILED: %0d", fail_count);
+    if (fail_count == 0)
+      $display("  *** ALL TESTS PASSED - DUT VERIFIED CORRECT ***");
+    else
+      $display("  *** FAILURES DETECTED - CHECK DUT LOGIC ***");
+    $display("==================================================");
+    $display("");
+
+    $finish;
+  end
+
+  // -------------------------------------------------------
+  // Timeout watchdog
+  // -------------------------------------------------------
+  initial begin
+    #500000;
+    $display("TIMEOUT - simulation exceeded 500us");
+    $finish;
+  end
+
+endmodule
