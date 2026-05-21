@@ -45,53 +45,18 @@ RTL structure, and verifiability.
 
 ---
 
-## Verification Results
-```
-TEST SUMMARY: 14 PASSED | 0 FAILED
-
-FUNCTIONAL COVERAGE REPORT
-  Write reg0       : HIT
-  Write reg1       : HIT
-  Write reg2       : HIT
-  Write reg3       : HIT
-  Read  reg0       : HIT
-  Read  reg1       : HIT
-  Read  reg2       : HIT
-  Read  reg3       : HIT
-  Partial WSTRB    : HIT
-  Back-to-back     : HIT
-  Coverage         : 10 / 10 (100%)
-```
-
----
-
 ## Project Structure
 ```
 axi-lite-peripheral/
 ├── rtl/
 │   └── axi_lite_slave.v        # AXI4-Lite slave RTL
+|   └── axi_lite_dma.v
 ├── tb/
-│   └── tb_axi_lite.v           # Testbench with assertions, scoreboard & coverage
+│   └── tb_axi_lite.sv           # Testbench with assertions, scoreboard & coverage
+│   └──tb_axi_lite_dma.sv
 ├── waveforms/
-│   └── axi.vcd                 # Simulation waveform output
-├── sim                         # Compiled simulation binary
+│   └── xsim_simulation_ss                 # Simulation waveform output
 └── README.md
-```
-
----
-
-## How to Run
-
-**Requirements:** Icarus Verilog, GTKWave (Linux/WSL/Windows)
-```bash
-# Compile
-iverilog -g2012 -o sim rtl/axi_lite_slave.v tb/tb_axi_lite.v
-
-# Simulate
-vvp sim
-
-# View waveforms
-gtkwave waveforms/axi.vcd
 ```
 
 ---
