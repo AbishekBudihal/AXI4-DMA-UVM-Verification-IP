@@ -1,0 +1,415 @@
+// ============================================================
+//  Testbench: AXI4-Lite DMA Controller Front-End
+//  Simulator: Vivado XSim (SystemVerilog)
+//
+//  Test Cases:
+//    TC1 - Register Programming   : write SRC/DST/LEN, read back, verify
+//    TC2 - Normal Transfer        : start DMA, poll BUSY->DONE transition
+//    TC3 - IRQ Enable + Done Flag : enable IRQ, verify dma_irq asserts on done
+//    TC4 - Error Detection        : start with zero length, verify ERROR bit
+//    TC5 - Back-to-back transfers : start second transfer immediately after first
+//
+//  Scoreboard: every read is checked against expected value.
+//  Coverage  : tracks which registers were written and which
+//              CTRL_STAT status bits were observed.
+// ============================================================
+
+`timescale 1ns/1ps
+
+module tb_axi_lite_dma;
+
+// ─── Parameters ───────────────────────────────────────────────
+parameter DATA_WIDTH = 32;
+parameter ADDR_WIDTH = 32;
+parameter CLK_PERIOD = 10;  // 10ns = 100MHz
+
+// Register addresses
+parameter ADDR_SRC_ADDR  = 32'h00;
+parameter ADDR_DST_ADDR  = 32'h04;
+parameter ADDR_XFER_LEN  = 32'h08;
+parameter ADDR_CTRL_STAT = 32'h0C;
+
+// CTRL_STAT bit masks
+parameter BIT_START  = 32'h01;
+parameter BIT_BUSY   = 32'h02;
+parameter BIT_DONE   = 32'h04;
+parameter BIT_ERROR  = 32'h08;
+parameter BIT_IRQ_EN = 32'h10;
+
+// ─── Clock & Reset ────────────────────────────────────────────
+reg clk, rst;
+initial clk = 0;
+always #(CLK_PERIOD/2) clk = ~clk;
+
+// ─── AXI signals ──────────────────────────────────────────────
+reg                    awvalid;
+reg  [ADDR_WIDTH-1:0]  awaddr;
+wire                   awready;
+
+reg                    wvalid;
+reg  [DATA_WIDTH-1:0]  wdata;
+reg  [DATA_WIDTH/8-1:0] wstrb;
+wire                   wready;
+
+wire                   bvalid;
+wire [1:0]             bresp;
+reg                    bready;
+
+reg                    arvalid;
+reg  [ADDR_WIDTH-1:0]  araddr;
+wire                   arready;
+
+wire                   rvalid;
+wire [DATA_WIDTH-1:0]  rdata;
+wire [1:0]             rresp;
+reg                    rready;
+
+wire                   dma_busy;
+wire                   dma_done;
+wire                   dma_irq;
+
+// ─── DUT instantiation ────────────────────────────────────────
+axi_lite_dma #(
+    .DATA_WIDTH(DATA_WIDTH),
+    .ADDR_WIDTH(ADDR_WIDTH)
+) dut (
+    .clk(clk), .rst(rst),
+    .awvalid(awvalid), .awaddr(awaddr), .awready(awready),
+    .wvalid(wvalid),   .wdata(wdata),   .wstrb(wstrb),   .wready(wready),
+    .bvalid(bvalid),   .bresp(bresp),   .bready(bready),
+    .arvalid(arvalid), .araddr(araddr), .arready(arready),
+    .rvalid(rvalid),   .rdata(rdata),   .rresp(rresp),   .rready(rready),
+    .dma_busy(dma_busy),
+    .dma_done(dma_done),
+    .dma_irq(dma_irq)
+);
+
+// ─── Scoreboard ───────────────────────────────────────────────
+integer pass_count;
+integer fail_count;
+
+task scoreboard_check;
+    input [DATA_WIDTH-1:0] actual;
+    input [DATA_WIDTH-1:0] expected;
+    input [127:0]          test_name;
+    begin
+        if (actual === expected) begin
+            $display("[PASS] %s | Got: 0x%08h | Expected: 0x%08h",
+                     test_name, actual, expected);
+            pass_count = pass_count + 1;
+        end else begin
+            $display("[FAIL] %s | Got: 0x%08h | Expected: 0x%08h",
+                     test_name, actual, expected);
+            fail_count = fail_count + 1;
+        end
+    end
+endtask
+
+// ─── Coverage tracking ────────────────────────────────────────
+reg cov_src_written;
+reg cov_dst_written;
+reg cov_len_written;
+reg cov_start_issued;
+reg cov_busy_seen;
+reg cov_done_seen;
+reg cov_irq_seen;
+reg cov_error_seen;
+reg cov_back2back;
+
+task reset_coverage;
+    begin
+        cov_src_written  = 0;
+        cov_dst_written  = 0;
+        cov_len_written  = 0;
+        cov_start_issued = 0;
+        cov_busy_seen    = 0;
+        cov_done_seen    = 0;
+        cov_irq_seen     = 0;
+        cov_error_seen   = 0;
+        cov_back2back    = 0;
+    end
+endtask
+
+task print_coverage;
+    integer covered, total;
+    begin
+        covered = cov_src_written + cov_dst_written + cov_len_written +
+                  cov_start_issued + cov_busy_seen + cov_done_seen +
+                  cov_irq_seen + cov_error_seen + cov_back2back;
+        total = 9;
+        $display("\n============================================================");
+        $display("  COVERAGE REPORT");
+        $display("============================================================");
+        $display("  SRC_ADDR written        : %s", cov_src_written  ? "YES" : "NO");
+        $display("  DST_ADDR written        : %s", cov_dst_written  ? "YES" : "NO");
+        $display("  XFER_LEN written        : %s", cov_len_written  ? "YES" : "NO");
+        $display("  DMA START issued        : %s", cov_start_issued ? "YES" : "NO");
+        $display("  BUSY state observed     : %s", cov_busy_seen    ? "YES" : "NO");
+        $display("  DONE state observed     : %s", cov_done_seen    ? "YES" : "NO");
+        $display("  IRQ asserted            : %s", cov_irq_seen     ? "YES" : "NO");
+        $display("  ERROR flag triggered    : %s", cov_error_seen   ? "YES" : "NO");
+        $display("  Back-to-back transfer   : %s", cov_back2back    ? "YES" : "NO");
+        $display("  Coverage: %0d/%0d = %0d%%", covered, total, (covered*100)/total);
+        $display("============================================================");
+    end
+endtask
+
+// ─── AXI transaction tasks ────────────────────────────────────
+task axi_write;
+    input [ADDR_WIDTH-1:0] addr;
+    input [DATA_WIDTH-1:0] data;
+    input [DATA_WIDTH/8-1:0] strb;
+    begin
+        // Present AW channel
+        @(negedge clk);  // drive after falling edge to avoid setup violations
+        awvalid = 1; awaddr = addr;
+
+        // Wait for awready on posedge, then deassert
+        @(posedge clk); while (!awready) @(posedge clk);
+        @(negedge clk); awvalid = 0;
+
+        // Present W channel
+        @(negedge clk);
+        wvalid = 1; wdata = data; wstrb = strb;
+
+        // Wait for wready
+        @(posedge clk); while (!wready) @(posedge clk);
+        @(negedge clk); wvalid = 0;
+
+        // Accept B response
+        @(negedge clk); bready = 1;
+        @(posedge clk); while (!bvalid) @(posedge clk);
+        @(negedge clk); bready = 0;
+
+        // Settling - register is clocked in, safe to read after this
+        repeat(4) @(posedge clk);
+    end
+endtask
+
+task axi_read;
+    input  [ADDR_WIDTH-1:0] addr;
+    output [DATA_WIDTH-1:0] data_out;
+    begin
+        // Present AR channel after falling edge
+        @(negedge clk);
+        arvalid = 1; araddr = addr;
+
+        // Wait for arready posedge handshake
+        @(posedge clk); while (!arready) @(posedge clk);
+
+        // Deassert arvalid, now accept R channel
+        @(negedge clk);
+        arvalid = 0;
+        rready  = 1;
+
+        // Wait for rvalid - DUT presents data this cycle
+        @(posedge clk); while (!rvalid) @(posedge clk);
+        data_out = rdata;
+
+        @(negedge clk);
+        rready = 0;
+
+        repeat(4) @(posedge clk);
+    end
+endtask
+
+// Poll CTRL_STAT until a bit pattern matches, with timeout
+task poll_status;
+    input  [DATA_WIDTH-1:0] mask;
+    input  [DATA_WIDTH-1:0] expected_val;
+    input  integer          timeout_cycles;
+    output                  timed_out;
+    reg    [DATA_WIDTH-1:0] rd;
+    integer                 count;
+    begin
+        timed_out = 0;
+        count = 0;
+        rd = 0;
+        while (((rd & mask) !== expected_val) && (count < timeout_cycles)) begin
+            axi_read(ADDR_CTRL_STAT, rd);
+            count = count + 1;
+        end
+        if (count >= timeout_cycles) begin
+            $display("[TIMEOUT] poll_status: mask=0x%08h expected=0x%08h last=0x%08h",
+                     mask, expected_val, rd);
+            timed_out = 1;
+        end
+    end
+endtask
+
+// ─── Simulation ───────────────────────────────────────────────
+reg [DATA_WIDTH-1:0] rd_data;
+reg                  timeout;
+
+initial begin
+    // Initialise
+    pass_count = 0; fail_count = 0;
+    reset_coverage();
+    awvalid = 0; awaddr = 0;
+    wvalid  = 0; wdata  = 0; wstrb = 4'hF;
+    bready  = 0;
+    arvalid = 0; araddr = 0;
+    rready  = 0;
+
+    // Reset
+    rst = 1;
+    repeat(5) @(posedge clk);
+    rst = 0;
+    repeat(3) @(posedge clk);
+
+    $display("\n============================================================");
+    $display("  AXI4-Lite DMA Front-End Testbench");
+    $display("============================================================\n");
+
+    // =========================================================
+    // TC1 - Register Programming & Read-Back
+    // =========================================================
+    $display("--- TC1: Register Programming ---");
+
+    axi_write(ADDR_SRC_ADDR, 32'hA000_0000, 4'hF);  cov_src_written = 1;
+    axi_write(ADDR_DST_ADDR, 32'hB000_0000, 4'hF);  cov_dst_written = 1;
+    axi_write(ADDR_XFER_LEN, 32'h0000_0040, 4'hF);  cov_len_written = 1;  // 64 bytes
+
+    axi_read(ADDR_SRC_ADDR,  rd_data);
+    scoreboard_check(rd_data, 32'hA000_0000, "TC1 SRC_ADDR readback  ");
+
+    axi_read(ADDR_DST_ADDR,  rd_data);
+    scoreboard_check(rd_data, 32'hB000_0000, "TC1 DST_ADDR readback  ");
+
+    axi_read(ADDR_XFER_LEN,  rd_data);
+    scoreboard_check(rd_data, 32'h0000_0040, "TC1 XFER_LEN readback  ");
+
+    axi_read(ADDR_CTRL_STAT, rd_data);
+    scoreboard_check(rd_data & 32'hFF, 32'h00, "TC1 CTRL_STAT idle     ");
+
+    // =========================================================
+    // TC2 - Normal DMA Transfer (poll BUSY → DONE)
+    // =========================================================
+    $display("\n--- TC2: Normal Transfer (BUSY -> DONE) ---");
+
+    // Start transfer
+    axi_write(ADDR_CTRL_STAT, BIT_START, 4'hF);
+    cov_start_issued = 1;
+    $display("[INFO] TC2: DMA started (XFER_LEN=64 bytes = 64 clock cycles)");
+
+    // Poll for BUSY
+    poll_status(BIT_BUSY, BIT_BUSY, 20, timeout);
+    if (!timeout) begin
+        $display("[INFO] TC2: BUSY asserted - transfer in progress");
+        cov_busy_seen = 1;
+    end
+
+    // Poll for DONE (timeout after 200 cycles)
+    poll_status(BIT_DONE, BIT_DONE, 200, timeout);
+    if (!timeout) begin
+        $display("[INFO] TC2: DONE asserted - transfer complete");
+        cov_done_seen = 1;
+    end
+
+    axi_read(ADDR_CTRL_STAT, rd_data);
+    scoreboard_check(rd_data & BIT_DONE, BIT_DONE, "TC2 DONE bit set       ");
+    scoreboard_check(rd_data & BIT_BUSY, 32'h0,    "TC2 BUSY cleared       ");
+
+    // =========================================================
+    // TC3 - IRQ Enable: verify dma_irq output
+    // =========================================================
+    $display("\n--- TC3: IRQ Enable + Done Interrupt ---");
+
+    // Program new transfer with IRQ enabled
+    axi_write(ADDR_SRC_ADDR,  32'hC000_0000, 4'hF);
+    axi_write(ADDR_DST_ADDR,  32'hD000_0000, 4'hF);
+    axi_write(ADDR_XFER_LEN,  32'h00000008,  4'hF);  // 8-cycle transfer
+    // Enable IRQ + start in one write
+    axi_write(ADDR_CTRL_STAT, BIT_IRQ_EN | BIT_START, 4'hF);
+    $display("[INFO] TC3: Transfer started with IRQ enabled");
+
+    // Wait for done
+    poll_status(BIT_DONE, BIT_DONE, 100, timeout);
+
+    // Check dma_irq output (combinational, check right after done)
+    repeat(2) @(posedge clk);
+    if (dma_irq) begin
+        $display("[PASS] TC3 IRQ asserted correctly  | dma_irq=1");
+        pass_count = pass_count + 1;
+        cov_irq_seen = 1;
+    end else begin
+        $display("[FAIL] TC3 IRQ not asserted        | dma_irq=0");
+        fail_count = fail_count + 1;
+    end
+
+    // =========================================================
+    // TC4 - Error Detection: START with XFER_LEN = 0
+    // =========================================================
+    $display("\n--- TC4: Error Detection (zero-length transfer) ---");
+
+    rst = 1; repeat(3) @(posedge clk); rst = 0; repeat(2) @(posedge clk);
+
+    // Leave XFER_LEN at 0 (reset state), attempt start
+    axi_write(ADDR_CTRL_STAT, BIT_START, 4'hF);
+    repeat(3) @(posedge clk);
+
+    axi_read(ADDR_CTRL_STAT, rd_data);
+    scoreboard_check(rd_data & BIT_ERROR, BIT_ERROR, "TC4 ERROR bit on len=0 ");
+    scoreboard_check(rd_data & BIT_BUSY,  32'h0,     "TC4 BUSY not set       ");
+    if (rd_data & BIT_ERROR) cov_error_seen = 1;
+
+    // =========================================================
+    // TC5 - Back-to-back transfers
+    // =========================================================
+    $display("\n--- TC5: Back-to-back Transfers ---");
+
+    rst = 1; repeat(3) @(posedge clk); rst = 0; repeat(2) @(posedge clk);
+
+    // First transfer
+    axi_write(ADDR_SRC_ADDR,  32'h1000_0000, 4'hF);
+    axi_write(ADDR_DST_ADDR,  32'h2000_0000, 4'hF);
+    axi_write(ADDR_XFER_LEN,  32'h00000004,  4'hF);
+    axi_write(ADDR_CTRL_STAT, BIT_START,     4'hF);
+    poll_status(BIT_DONE, BIT_DONE, 100, timeout);
+    $display("[INFO] TC5: First transfer done");
+
+    // Second transfer immediately (back-to-back)
+    axi_write(ADDR_SRC_ADDR,  32'h3000_0000, 4'hF);
+    axi_write(ADDR_DST_ADDR,  32'h4000_0000, 4'hF);
+    axi_write(ADDR_XFER_LEN,  32'h00000004,  4'hF);
+    axi_write(ADDR_CTRL_STAT, BIT_START,     4'hF);
+    poll_status(BIT_DONE, BIT_DONE, 100, timeout);
+
+    axi_read(ADDR_CTRL_STAT, rd_data);
+    scoreboard_check(rd_data & BIT_DONE, BIT_DONE, "TC5 2nd transfer DONE  ");
+    scoreboard_check(rd_data & BIT_BUSY, 32'h0,    "TC5 2nd transfer BUSY clr");
+    if (!timeout) cov_back2back = 1;
+
+    // =========================================================
+    // Final report
+    // =========================================================
+    $display("\n============================================================");
+    $display("  SCOREBOARD SUMMARY");
+    $display("============================================================");
+    $display("  PASS: %0d", pass_count);
+    $display("  FAIL: %0d", fail_count);
+    if (fail_count == 0)
+        $display("  RESULT: ALL TESTS PASSED");
+    else
+        $display("  RESULT: %0d TEST(S) FAILED", fail_count);
+    $display("============================================================");
+
+    print_coverage();
+
+    $finish;
+end
+
+// Waveform dump (XSim-compatible)
+initial begin
+    $dumpfile("tb_axi_lite_dma.vcd");
+    $dumpvars(0, tb_axi_lite_dma);
+end
+
+// Watchdog - kills sim if it hangs
+initial begin
+    #500000;
+    $display("[WATCHDOG] Simulation exceeded 500us - terminating");
+    $finish;
+end
+
+endmodule
