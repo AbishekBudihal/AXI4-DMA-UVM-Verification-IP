@@ -1,0 +1,211 @@
+// ============================================================
+//  AXI4-Lite DMA Controller Front-End  (v4)
+//
+//  Register Map:
+//    0x00  SRC_ADDR
+//    0x04  DST_ADDR
+//    0x08  XFER_LEN
+//    0x0C  CTRL_STAT [0]=START [1]=BUSY [2]=DONE [3]=ERROR [4]=IRQ_EN
+// ============================================================
+
+module axi_lite_dma #(
+    parameter DATA_WIDTH = 32,
+    parameter ADDR_WIDTH = 32
+)(
+    input  wire                    clk,
+    input  wire                    rst,
+
+    input  wire                    awvalid,
+    input  wire [ADDR_WIDTH-1:0]   awaddr,
+    output reg                     awready,
+
+    input  wire                    wvalid,
+    input  wire [DATA_WIDTH-1:0]   wdata,
+    input  wire [DATA_WIDTH/8-1:0] wstrb,
+    output reg                     wready,
+
+    output reg                     bvalid,
+    output reg  [1:0]              bresp,
+    input  wire                    bready,
+
+    input  wire                    arvalid,
+    input  wire [ADDR_WIDTH-1:0]   araddr,
+    output reg                     arready,
+
+    output reg                     rvalid,
+    output reg  [DATA_WIDTH-1:0]   rdata,
+    output reg  [1:0]              rresp,
+    input  wire                    rready,
+
+    output wire                    dma_busy,
+    output wire                    dma_done,
+    output wire                    dma_irq
+);
+
+localparam RESP_OKAY   = 2'b00;
+localparam RESP_DECERR = 2'b11;
+
+localparam W_IDLE = 2'd0, W_DATA = 2'd1, W_RESP = 2'd2;
+localparam R_IDLE = 1'd0, R_DATA = 1'd1;
+localparam DMA_IDLE = 2'd0, DMA_BUSY_S = 2'd1, DMA_DONE_S = 2'd2;
+
+localparam REG_SRC = 2'd0, REG_DST = 2'd1,
+           REG_LEN = 2'd2, REG_CTRL = 2'd3;
+
+reg [DATA_WIDTH-1:0] src_addr;
+reg [DATA_WIDTH-1:0] dst_addr;
+reg [DATA_WIDTH-1:0] xfer_len;
+reg [DATA_WIDTH-1:0] ctrl_stat;
+
+reg [1:0]            w_state;
+reg                  r_state;
+reg [ADDR_WIDTH-1:0] aw_addr_lat;
+reg                  aw_inrange_lat;
+reg [1:0]            dma_state;
+reg [DATA_WIDTH-1:0] dma_counter;
+
+// Combinational address decode for writes (from latched aw address)
+wire [1:0] wr_idx     = aw_addr_lat[3:2];
+wire       aw_inrange = (awaddr[ADDR_WIDTH-1:4] == 0) && (awaddr[3:2] <= 2'd3);
+// Combinational address decode for reads (direct from araddr - valid while arvalid)
+wire [1:0] rd_idx     = araddr[3:2];
+wire       ar_inrange = (araddr[ADDR_WIDTH-1:4] == 0) && (araddr[3:2] <= 2'd3);
+
+assign dma_busy = ctrl_stat[1];
+assign dma_done = ctrl_stat[2];
+assign dma_irq  = ctrl_stat[2] & ctrl_stat[4];
+
+// ─── Write FSM + DMA FSM (single ctrl_stat owner) ─────────────
+always @(posedge clk) begin
+    if (rst) begin
+        awready        <= 0; wready    <= 0;
+        bvalid         <= 0; bresp     <= RESP_OKAY;
+        aw_addr_lat    <= 0; aw_inrange_lat <= 0;
+        w_state        <= W_IDLE;
+        src_addr       <= 0; dst_addr  <= 0;
+        xfer_len       <= 0; ctrl_stat <= 0;
+        dma_state      <= DMA_IDLE; dma_counter <= 0;
+    end else begin
+        awready <= 0;
+        wready  <= 0;
+
+        case (w_state)
+            W_IDLE: begin
+                if (awvalid) begin
+                    awready        <= 1;
+                    aw_addr_lat    <= awaddr;
+                    aw_inrange_lat <= aw_inrange;
+                    w_state        <= W_DATA;
+                end
+            end
+
+            W_DATA: begin
+                if (wvalid) begin
+                    wready  <= 1;
+                    bvalid  <= 1;
+                    w_state <= W_RESP;
+                    if (aw_inrange_lat) begin
+                        bresp <= RESP_OKAY;
+                        case (wr_idx)
+                            REG_SRC:  if (!ctrl_stat[1]) src_addr <= wdata;
+                            REG_DST:  if (!ctrl_stat[1]) dst_addr <= wdata;
+                            REG_LEN:  if (!ctrl_stat[1]) xfer_len <= wdata;
+                            REG_CTRL: begin
+                                ctrl_stat[4] <= wdata[4];
+                                if (wdata[0] && !ctrl_stat[1]) begin
+                                    if (xfer_len > 0) begin
+                                        ctrl_stat[1] <= 1;
+                                        ctrl_stat[2] <= 0;
+                                        ctrl_stat[3] <= 0;
+                                        dma_counter  <= xfer_len;
+                                        dma_state    <= DMA_BUSY_S;
+                                    end else begin
+                                        ctrl_stat[3] <= 1;
+                                    end
+                                end
+                            end
+                        endcase
+                    end else begin
+                        bresp <= RESP_DECERR;
+                    end
+                end
+            end
+
+            W_RESP: begin
+                if (bvalid && bready) begin
+                    bvalid  <= 0;
+                    bresp   <= RESP_OKAY;
+                    w_state <= W_IDLE;
+                end
+            end
+
+            default: w_state <= W_IDLE;
+        endcase
+
+        case (dma_state)
+            DMA_IDLE: ;
+            DMA_BUSY_S: begin
+                if (dma_counter > 1)
+                    dma_counter <= dma_counter - 1;
+                else begin
+                    dma_counter  <= 0;
+                    ctrl_stat[1] <= 0;
+                    ctrl_stat[2] <= 1;
+                    dma_state    <= DMA_DONE_S;
+                end
+            end
+            DMA_DONE_S: ;
+            default: dma_state <= DMA_IDLE;
+        endcase
+    end
+end
+
+// ─── Read FSM ─────────────────────────────────────────────────
+// araddr is stable while arvalid=1. We accept the address,
+// decode it combinationally, and present rdata in the same cycle.
+// rvalid is held until rready is seen.
+always @(posedge clk) begin
+    if (rst) begin
+        arready <= 0; rvalid <= 0;
+        rdata   <= 0; rresp  <= RESP_OKAY;
+        r_state <= R_IDLE;
+    end else begin
+        arready <= 0;
+        case (r_state)
+            R_IDLE: begin
+                if (arvalid) begin
+                    arready <= 1;
+                    rvalid  <= 1;
+                    r_state <= R_DATA;
+                    // rd_idx and ar_inrange are combinational from araddr
+                    // araddr is guaranteed stable while arvalid=1 (AXI rule)
+                    if (ar_inrange) begin
+                        rresp <= RESP_OKAY;
+                        case (rd_idx)
+                            REG_SRC:  rdata <= src_addr;
+                            REG_DST:  rdata <= dst_addr;
+                            REG_LEN:  rdata <= xfer_len;
+                            REG_CTRL: rdata <= ctrl_stat;
+                            default:  rdata <= 0;
+                        endcase
+                    end else begin
+                        rdata <= 0;
+                        rresp <= RESP_DECERR;
+                    end
+                end
+            end
+
+            R_DATA: begin
+                if (rvalid && rready) begin
+                    rvalid  <= 0;
+                    rresp   <= RESP_OKAY;
+                    r_state <= R_IDLE;
+                end
+            end
+
+            default: r_state <= R_IDLE;
+        endcase
+    end
+end
+
+endmodule
