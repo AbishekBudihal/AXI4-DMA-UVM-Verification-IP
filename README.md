@@ -32,7 +32,26 @@ axi-lite-peripheral/
 │   └── xsim_simulation_ss                 # Simulation waveform output
 └── README.md
 ```
+## Simulation Waveforms
 
+### 1. AXI4-Lite Write Transactions
+Clean `AWVALID`/`AWREADY` and `WVALID`/`WREADY` handshakes across multiple addresses (`0x00000008`, `0x0000000c`), with `BVALID`/`BREADY` write responses — full AXI4-Lite write channel compliance demonstrated.
+
+![AXI Write Transaction Waveform](waveforms/AXI_Write_Transaction_Waveform.png)
+
+---
+
+### 2. DMA BUSY → DONE Transition + Coverage
+`dma_busy` goes high → `dma_done` asserts at transfer completion. All 6 coverage bins hit simultaneously.
+
+![DMA BUSY-to-DONE Transition Waveform](waveforms/DMA_BUSY_to_DONE_Transition_Waveform.png)
+
+---
+
+### 3. DMA IRQ Assertion
+`dma_irq` fires precisely when `dma_done` asserts — correct interrupt timing verified.
+
+![DMA IRQ Assertion Waveform](waveforms/dma_irq_Assertion_Waveform.png)
 ---
 
 ## AXI4-Lite Slave Peripheral
