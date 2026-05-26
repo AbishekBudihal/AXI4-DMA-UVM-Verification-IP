@@ -54,7 +54,20 @@ Clean `AWVALID`/`AWREADY` and `WVALID`/`WREADY` handshakes across multiple addre
 ![DMA IRQ Assertion Waveform](waveforms/dma_irq_Assertion_Waveform.png)
 ---
 
-## AXI4-Lite Slave Peripheral
+## Validation Results
+
+| Parameter | Result |
+|---|---|
+| AXI4-Lite Channels | All 5 implemented and verified |
+| DMA Transfer Completion | `dma_done` assertion confirmed |
+| IRQ Timing | Fires at `dma_done` — zero latency error |
+| Functional Coverage | **100%** — all bins hit |
+| Pass / Fail | 11 / 0 |
+| Verification Methodology | UVM (Universal Verification Methodology) |
+| Simulation Tool | GTKWave (VCD), Xilinx Vivado |
+
+---
+
 
 ### Features
 - All five AXI4-Lite channels: AW, W, B, AR, R  
@@ -67,40 +80,6 @@ Clean `AWVALID`/`AWREADY` and `WVALID`/`WREADY` handshakes across multiple addre
 - Synchronous active-low reset  
 - Clean RTL structure for direct SoC integration  
 
-### Register Map
-
-| Address | Register | Access |
-|---------|----------|--------|
-| 0x00 | REG0 | R/W |
-| 0x04 | REG1 | R/W |
-| 0x08 | REG2 | R/W |
-| 0x0C | REG3 | R/W |
----
-
-## AXI4-Lite DMA Controller Front-End
-
-Replicates the programming model of **AMD/Xilinx AXI DMA IP (PG021)**.
-
-### Register Map
-
-| Address | Register | Access | Description |
-|---------|----------|--------|-------------|
-| 0x00 | SRC_ADDR | R/W* | DMA source address |
-| 0x04 | DST_ADDR | R/W* | DMA destination address |
-| 0x08 | XFER_LEN | R/W* | Transfer length in clock cycles |
-| 0x0C | CTRL_STAT | R/W | Control and status register |
-
-*Write-protected during active transfer (BUSY=1)
-
-### CTRL_STAT Bits
-
-| Bit | Name | Description |
-|-----|------|-------------|
-| 0 | START | Write 1 to initiate transfer |
-| 1 | BUSY | Set by HW when transfer active |
-| 2 | DONE | Set by HW when transfer complete |
-| 3 | ERROR | Set on zero-length transfer attempt |
-| 4 | IRQ_EN | Enable hardware interrupt output |
 ---
 
 ## How to Run
