@@ -19,17 +19,41 @@ The design was synthesized in **Xilinx Vivado 2025.2** targeting the **Artix-7 (
 
 ---
 
+## Features
+
+### RTL Design
+- Full **AXI4-Lite slave** — all 5 channels implemented:
+  - Write Address (AW), Write Data (W), Write Response (B)
+  - Read Address (AR), Read Data (R)
+- **VALID/READY handshaking** per AXI4-Lite protocol spec
+- **Byte-enable write strobes** for partial word writes
+- **DMA Controller** — configurable source, destination, and transfer length
+- **DMA IRQ** — interrupt fires precisely at `dma_done` assertion (transfer completion)
+
+### Verification Environment (UVM)
+- Full UVM testbench: agent, driver, monitor, scoreboard, coverage collector
+- **Constrained-random stimulus** for AXI write/read transactions
+- **Functional coverage** across all key DMA events:
+  - `cov_src_written`, `cov_dst_written`, `cov_len_written`
+  - `cov_start_issued`, `cov_busy_seen`, `cov_done_seen`
+- **100% functional coverage** achieved — `pass_count = 11`, `fail_count = 0`
+---
+
 ## Project Structure
 ```
-axi-lite-peripheral/
 ├── rtl/
-│   └── axi_lite_slave.v        # AXI4-Lite slave RTL
-|   └── axi_lite_dma.v
+│   ├── axi4_lite_slave.v       # AXI4-Lite slave peripheral
+│   ├── dma_controller.v        # DMA engine with IRQ support
+│   └── top.v                   # Top-level integration
 ├── tb/
-│   └── tb_axi_lite.sv           # Testbench with assertions, scoreboard & coverage
-│   └──tb_axi_lite_dma.sv
+│   ├── uvm_env/                # UVM environment (agent, driver, monitor)
+│   ├── uvm_sequences/          # Constrained-random sequences
+│   ├── uvm_scoreboard/         # Scoreboard & checker
+│   └── tb_top.sv               # Testbench top
 ├── waveforms/
-│   └── xsim_simulation_ss                 # Simulation waveform output
+│   ├── axi.vcd                 # AXI write transaction waveform
+│   ├── dma.vcd                 # DMA BUSY→DONE transition waveform
+│   └── dma_irq.vcd             # DMA IRQ assertion waveform
 └── README.md
 ```
 ## Simulation Waveforms
@@ -68,19 +92,6 @@ Clean `AWVALID`/`AWREADY` and `WVALID`/`WREADY` handshakes across multiple addre
 
 ---
 
-
-### Features
-- All five AXI4-Lite channels: AW, W, B, AR, R  
-- VALID/READY handshaking on every channel  
-- 32-bit register file with address decoding  
-- Byte-enable write strobes (WSTRB) for partial writes  
-- DMA controller: IDLE → BUSY → DONE state machine  
-- Configurable source address, destination address, transfer length  
-- dma_irq interrupt output — asserts on transfer completion  
-- Synchronous active-low reset  
-- Clean RTL structure for direct SoC integration  
-
----
 
 ## How to Run
 
