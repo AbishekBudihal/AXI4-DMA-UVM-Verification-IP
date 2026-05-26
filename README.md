@@ -1,8 +1,8 @@
 # AXI4-Lite Configurable SoC Peripheral Subsystem
 
-> AXI4-Lite Slave + DMA Controller with IRQ — 
-> RTL Design & UVM Verification Environment 
-> Constrained-random testbench with 100% functional coverage 
+> AXI4-Lite Slave + DMA Controller with IRQ —  
+> RTL Design & UVM Verification Environment  
+> Constrained-random testbench with 100% functional coverage  
 
 ---
 
