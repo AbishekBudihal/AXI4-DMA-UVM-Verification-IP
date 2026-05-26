@@ -1,8 +1,6 @@
 # AXI4-Lite Configurable SoC Peripheral Subsystem
 
 > RTL Design, DMA Controller Front-End, and UVM-Style Functional Verification
-> Visvesvaraya Technological University, Belagavi — Final Year Project 2025-26
-> **Abishek Budihal** | Dept. of Electronics & Computer Engineering
 
 ---
 
