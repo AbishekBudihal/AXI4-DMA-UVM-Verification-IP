@@ -29,7 +29,7 @@ The design was synthesized in **Xilinx Vivado 2025.2** targeting the **Artix-7 (
 - **Byte-enable write strobes** for partial word writes
 - **DMA Controller** — configurable source, destination, and transfer length
 - **DMA IRQ** — interrupt fires precisely at `dma_done` assertion (transfer completion)
-
+---
 ### Verification Environment (UVM)
 - Full UVM testbench: agent, driver, monitor, scoreboard, coverage collector
 - **Constrained-random stimulus** for AXI write/read transactions
