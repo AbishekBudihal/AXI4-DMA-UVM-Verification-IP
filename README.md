@@ -38,12 +38,15 @@ axi-lite-peripheral/
 ## AXI4-Lite Slave Peripheral
 
 ### Features
-- Fully AXI4-Lite protocol compliant — correct VALID/READY handshake on all 5 channels
-- 4 × 32-bit memory-mapped register file (parameterized)
-- 3-state Write FSM: `W_IDLE → W_DATA → W_RESP`
-- 2-state Read FSM: `R_IDLE → R_DATA`
-- WSTRB byte-lane masking — each bit independently controls one byte lane
-- Response codes: OKAY (2'b00), SLVERR (2'b10), DECERR (2'b11) for unmapped addresses
+- All five AXI4-Lite channels: AW, W, B, AR, R  
+- VALID/READY handshaking on every channel  
+- 32-bit register file with address decoding  
+- Byte-enable write strobes (WSTRB) for partial writes  
+- DMA controller: IDLE → BUSY → DONE state machine  
+- Configurable source address, destination address, transfer length  
+- dma_irq interrupt output — asserts on transfer completion  
+- Synchronous active-low reset  
+- Clean RTL structure for direct SoC integration  
 
 ### Register Map
 
